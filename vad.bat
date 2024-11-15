@@ -1,11 +1,14 @@
 @echo off
 title Manage Mullvad Devices
 setlocal enabledelayedexpansion
-mode con: cols=70 lines=10
+mode con: cols=70 lines=15
 
 set "DEVICE_COUNT=0"
 set "MAX_DEVICES=3"
 set "REVOKED_COUNT=0"
+
+:: Initialize array for authorized devices
+set "AUTHORIZED_DEVICES_COUNT=1"
 
 :: Fetch current account key and store it as authorized key
 for /f "tokens=2 delims=: " %%A in ('mullvad account get ^| findstr /c:"Mullvad account: "') do (
@@ -24,9 +27,24 @@ set /a "CHECK_INTERVAL=7200"
 set "LAST_CHECK=%time%"
 set "LAST_ACCOUNT_STATUS=Authorized"
 
-:: Fetch the authorized device name and trim only leading/trailing spaces
+:: Fetch the primary authorized device name and trim only leading/trailing spaces
 for /f "tokens=3* usebackq" %%A in (`mullvad account get ^| findstr /c:"Device name    :"`) do (
-    set "AUTHORIZED_DEVICE=%%B"
+    set "AUTHORIZED_DEVICE_1=%%B"
+)
+
+:PROMPT_EXTRA_DEVICE
+cls
+echo Current authorized device: !AUTHORIZED_DEVICE_1!
+echo ----------------------------------------------------------------------
+echo Would you like to add an extra authorized device? (Y/N)
+choice /c YN /n
+if errorlevel 2 goto LOOP
+if errorlevel 1 (
+    echo Enter the name of the device to authorize:
+    set /p "AUTHORIZED_DEVICE_2="
+    set /a "AUTHORIZED_DEVICES_COUNT=2"
+    echo Added !AUTHORIZED_DEVICE_2! to authorized devices.
+    timeout /t 2 /nobreak >nul
 )
 
 :LOOP
@@ -44,7 +62,15 @@ for /f "skip=1 tokens=* usebackq" %%A in (`mullvad account list-devices`) do (
     if not "!DEVICE!"=="" (
         set /a "DEVICE_COUNT+=1"
         
-        if /i not "!DEVICE!"=="!AUTHORIZED_DEVICE!" (
+        set "IS_AUTHORIZED=0"
+        :: Check against all authorized devices
+        for /L %%i in (1,1,!AUTHORIZED_DEVICES_COUNT!) do (
+            if /i "!DEVICE!"=="!AUTHORIZED_DEVICE_%%i!" (
+                set "IS_AUTHORIZED=1"
+            )
+        )
+        
+        if !IS_AUTHORIZED! equ 0 (
             set /a "UNAUTHORIZED_COUNT+=1"
             set "UNAUTHORIZED_DEVICE_!UNAUTHORIZED_COUNT!=!DEVICE!"
             set "NEEDS_UPDATE=1"
@@ -60,7 +86,10 @@ if !UNAUTHORIZED_COUNT! gtr 0 (
 if !DEVICE_COUNT! gtr %MAX_DEVICES% (
     if !UNAUTHORIZED_COUNT! gtr 0 (
         cls
-        echo Authorized device: !AUTHORIZED_DEVICE!
+        echo Authorized devices:
+        for /L %%i in (1,1,!AUTHORIZED_DEVICES_COUNT!) do (
+            echo   !AUTHORIZED_DEVICE_%%i!
+        )
         echo ----------------------------------------------------------------------
         echo [ALERT] More than %MAX_DEVICES% devices connected.
         echo Revoking device: [!UNAUTHORIZED_DEVICE_%NEXT_TO_REVOKE%!]
@@ -83,7 +112,10 @@ if !SECONDS_DIFF! lss 0 set /a "SECONDS_DIFF+=86400"
 
 if !SECONDS_DIFF! geq %CHECK_INTERVAL% (
     cls
-    echo Authorized device: !AUTHORIZED_DEVICE!
+    echo Authorized devices:
+    for /L %%i in (1,1,!AUTHORIZED_DEVICES_COUNT!) do (
+        echo   !AUTHORIZED_DEVICE_%%i!
+    )
     echo ----------------------------------------------------------------------
     echo Performing periodic account check...
 
@@ -109,7 +141,10 @@ if !SECONDS_DIFF! geq %CHECK_INTERVAL% (
 )
 
 cls
-echo Authorized device: !AUTHORIZED_DEVICE!
+echo Authorized devices:
+for /L %%i in (1,1,!AUTHORIZED_DEVICES_COUNT!) do (
+    echo   !AUTHORIZED_DEVICE_%%i!
+)
 echo ----------------------------------------------------------------------
 echo Unauthorized devices (!UNAUTHORIZED_COUNT! found):
 if !UNAUTHORIZED_COUNT! gtr 0 (
