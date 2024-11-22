@@ -10,26 +10,38 @@ set "REVOKED_COUNT=0"
 :: Initialize array for authorized devices
 set "AUTHORIZED_DEVICES_COUNT=1"
 
-:: Fetch current account key and store it as authorized key
-for /f "tokens=2 delims=: " %%A in ('mullvad account get ^| findstr /c:"Mullvad account: "') do (
+:: Function to fetch account key with error handling
+:FetchAccountKey
+set "AUTHORIZED_KEY="
+for /f "tokens=2 delims=: " %%A in ('mullvad account get 2^>nul ^| findstr /c:"Mullvad account: "') do (
     set "AUTHORIZED_KEY=%%A"
 )
 
-:: Exit if we couldn't get the key
 if not defined AUTHORIZED_KEY (
     echo Error: Could not fetch Mullvad account key.
-    echo Please ensure Mullvad is installed and you are logged in.
-    timeout /t 5
-    exit /b
+    echo Attempting to re-login to Mullvad account...
+    mullvad account logout
+    timeout /t 2 /nobreak >nul
+    mullvad account login
+    timeout /t 5 /nobreak >nul
+    goto FetchAccountKey
 )
 
-set /a "CHECK_INTERVAL=7200"
-set "LAST_CHECK=%time%"
-set "LAST_ACCOUNT_STATUS=Authorized"
-
-:: Fetch the primary authorized device name and trim only leading/trailing spaces
-for /f "tokens=3* usebackq" %%A in (`mullvad account get ^| findstr /c:"Device name    :"`) do (
+:: Function to fetch authorized device name with error handling
+:FetchAuthorizedDevice
+set "AUTHORIZED_DEVICE_1="
+for /f "tokens=3* usebackq" %%A in (`mullvad account get 2^>nul ^| findstr /c:"Device name    :"`) do (
     set "AUTHORIZED_DEVICE_1=%%B"
+)
+
+if not defined AUTHORIZED_DEVICE_1 (
+    echo Error: Could not fetch authorized device name.
+    echo Attempting to re-login to Mullvad account...
+    mullvad account logout
+    timeout /t 2 /nobreak >nul
+    mullvad account login
+    timeout /t 5 /nobreak >nul
+    goto FetchAuthorizedDevice
 )
 
 :PROMPT_EXTRA_DEVICE
@@ -52,11 +64,38 @@ set "UNAUTHORIZED_COUNT=0"
 set /a "DEVICE_COUNT=0"
 set "NEEDS_UPDATE=0"
 
-:: Clear previous unauthorized devices
-for /L %%i in (1,1,10) do set "UNAUTHORIZED_DEVICE_%%i="
+:: Function to list devices with account key verification
+:ListDevices
+set "DEVICE_LIST_ERROR=0"
 
-:: Check devices
-for /f "skip=1 tokens=* usebackq" %%A in (`mullvad account list-devices`) do (
+:: Verify account key before listing devices
+set "CURRENT_ACCOUNT_KEY="
+for /f "tokens=2 delims=: " %%A in ('mullvad account get 2^>nul ^| findstr /c:"Mullvad account: "') do (
+    set "CURRENT_ACCOUNT_KEY=%%A"
+)
+
+if not "!CURRENT_ACCOUNT_KEY!"=="%AUTHORIZED_KEY%" (
+    echo [ALERT] Unauthorized account key detected.
+    echo Relogging to authorized account...
+    mullvad account logout
+    mullvad account login %AUTHORIZED_KEY%
+    timeout /t 1 /nobreak >nul
+    mullvad connect
+    
+    :: Re-fetch the authorized device name after re-login
+    set "AUTHORIZED_DEVICE_1="
+    for /f "tokens=3* usebackq" %%A in (`mullvad account get 2^>nul ^| findstr /c:"Device name    :"`) do (
+        set "AUTHORIZED_DEVICE_1=%%B"
+    )
+    
+    if not defined AUTHORIZED_DEVICE_1 (
+        echo Failed to fetch new device name. Retrying...
+        goto ListDevices
+    )
+)
+
+:: List devices
+for /f "skip=1 tokens=* usebackq" %%A in (`mullvad account list-devices 2^>nul`) do (
     set "DEVICE=%%A"
     
     if not "!DEVICE!"=="" (
@@ -76,6 +115,17 @@ for /f "skip=1 tokens=* usebackq" %%A in (`mullvad account list-devices`) do (
             set "NEEDS_UPDATE=1"
         )
     )
+)
+
+:: Check if device listing failed
+if !DEVICE_COUNT! equ 0 (
+    echo Error: Could not list Mullvad devices.
+    echo Attempting to re-login to Mullvad account...
+    mullvad account logout
+    timeout /t 2 /nobreak >nul
+    mullvad account login
+    timeout /t 5 /nobreak >nul
+    goto ListDevices
 )
 
 :: Generate random index for next device to revoke
@@ -98,46 +148,6 @@ if !DEVICE_COUNT! gtr %MAX_DEVICES% (
         echo Device revoked successfully.
         timeout /t 3 /nobreak >nul
     )
-)
-
-:: Calculate time difference for periodic check
-for /f "tokens=1-4 delims=:." %%a in ("%time%") do (
-    set /a "SECONDS_NOW=(1%%a %% 100)*3600 + (1%%b %% 100)*60 + (1%%c %% 100)"
-)
-for /f "tokens=1-4 delims=:." %%a in ("%LAST_CHECK%") do (
-    set /a "SECONDS_LAST=(1%%a %% 100)*3600 + (1%%b %% 100)*60 + (1%%c %% 100)"
-)
-set /a "SECONDS_DIFF=SECONDS_NOW-SECONDS_LAST"
-if !SECONDS_DIFF! lss 0 set /a "SECONDS_DIFF+=86400"
-
-if !SECONDS_DIFF! geq %CHECK_INTERVAL% (
-    cls
-    echo Authorized devices:
-    for /L %%i in (1,1,!AUTHORIZED_DEVICES_COUNT!) do (
-        echo   !AUTHORIZED_DEVICE_%%i!
-    )
-    echo ----------------------------------------------------------------------
-    echo Performing periodic account check...
-
-    set "ACCOUNT_KEY="
-    for /f "tokens=2 delims=: " %%A in ('mullvad account get ^| findstr /c:"Mullvad account: "') do (
-        set "ACCOUNT_KEY=%%A"
-    )
-
-    if "!ACCOUNT_KEY!"=="%AUTHORIZED_KEY%" (
-        echo Account key verified.
-        set "LAST_ACCOUNT_STATUS=Authorized"
-    ) else (
-        echo [ALERT] Unauthorized account key detected.
-        set "LAST_ACCOUNT_STATUS=Unauthorized"
-        echo Relogging to authorized account...
-        mullvad account login %AUTHORIZED_KEY%
-        timeout /t 1 /nobreak >nul
-        mullvad connect
-    )
-
-    set "LAST_CHECK=%time%"
-    timeout /t 3 /nobreak >nul
 )
 
 cls
